@@ -1,0 +1,1038 @@
+# coding: utf-8
+# Registry注册表文件模拟管理系统
+# Weihai
+# email: eeleon00@gmail.com
+
+import sys
+import codecs
+import re
+import types
+import copy
+from PyQt4.QtGui import *
+from PyQt4.QtCore import *
+
+QTextCodec.setCodecForTr(QTextCodec.codecForName("utf8"))
+
+# 源文件全局路径
+file_path = ''
+# 比较的目的文件全局路径
+compare_file_path = ''
+# 源文件可视化表格内容
+registry = {}
+
+class DiffTable(QWidget):
+    def __init__(self, parent=None):
+        super(DiffTable,self).__init__(parent)
+        screen = QDesktopWidget().screenGeometry()
+        #self.resize(screen.width(),screen.height())
+        self.setWindowTitle(self.tr("比较两个文件的差异"))
+        # 左边源文件表格
+        self.table1 = QTableWidget()
+        self.table1.setColumnCount(4)
+        #self.table1.verticalHeader().setVisible(False)
+        #self.table1.setEditTriggers(QAbstractItemView.DoubleClicked)
+        self.table1.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table1.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table1.setHorizontalHeaderLabels(['Register Key','Value','Data', 'type'])
+        self.table1.setColumnWidth(0,250)
+        self.table1.setColumnWidth(1,50)
+        self.table1.setColumnWidth(2,160)
+        self.table1.setColumnWidth(3,70)
+        self.label1 = QLabel(self.tr('源文件'))
+        leftLayout = QVBoxLayout()
+        leftLayout.addWidget(self.label1)
+        leftLayout.addWidget(self.table1)
+        # 右边目的文件表格
+        self.table2 = QTableWidget()
+        self.table2.setColumnCount(4)
+        self.table2.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table2.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table2.setHorizontalHeaderLabels(['Register','Value','Data','type'])
+        self.table2.setColumnWidth(0,250)
+        self.table2.setColumnWidth(1,50)
+        self.table2.setColumnWidth(2,160)
+        self.table2.setColumnWidth(3,70)
+        self.label2 = QLabel(self.tr('目的文件'))
+        rightLayout = QVBoxLayout()
+        rightLayout.addWidget(self.label2)
+        rightLayout.addWidget(self.table2)
+
+        #self.source_row = {}
+        #self.dest_row = {}
+        # 对比展示布局
+        MainLayout=QGridLayout(self)
+        MainLayout.addLayout(leftLayout,0,0)
+        MainLayout.addLayout(rightLayout,0,1)
+        MainLayout.setColumnMinimumWidth(0,570)
+        MainLayout.setColumnMinimumWidth(1,570)
+        MainLayout.setRowMinimumHeight(0,600)
+        
+    # 填充文件内容到可视化表格
+    def fill_table(self, table, reg):
+        row_count = 0
+        sorted_registry = sorted(reg.iteritems(),key=lambda d:d[0])
+        # 排序后格式[('a', 2),('b', 1)...]
+        for ele1 in sorted_registry:
+            sorted_vd = sorted(ele1[1].iteritems(), key=lambda d:d[0])
+            for ele2 in sorted_vd:
+                table.insertRow(row_count)
+                newItem1 = QTableWidgetItem(ele1[0])
+                table.setItem(row_count, 0, newItem1)
+                newItem2 = QTableWidgetItem(ele2[0])
+                table.setItem(row_count, 1, newItem2)
+                tmp = ele2[1]
+                # 若是dword前缀，取值并转化成十进制添加在其后面，下同
+                if tmp.startswith('dword:') or tmp.startswith('Dword:') or tmp.startswith('DWORD:'):
+                    dw = tmp[6:]
+                    oct_dw = int(dw, 16)
+                    item3_data = unicode(dw + ' (oct: ' + str(oct_dw) + ')')
+                    newItem3 = QTableWidgetItem(item3_data)
+                    table.setItem(row_count, 2, newItem3)
+                    cbo = QComboBox()                    
+                    cbo.addItem(self.tr('dword'))
+                    table.setCellWidget(row_count,3,cbo)
+                    #self.setRowColor(table,row_count,2)
+                elif tmp.startswith('hex:') or tmp.startswith('Hex:') or tmp.startswith('HEX:'):
+                    hx = tmp[4:].replace(',','')
+                    oct_hx = int(hx, 2)
+                    item3_data = unicode(hx + ' (oct: ' + str(oct_hx) + ')')
+                    newItem3 = QTableWidgetItem(item3_data)
+                    table.setItem(row_count, 2, newItem3)
+                    cbo = QComboBox()
+                    cbo.addItem(self.tr('hex'))
+                    table.setCellWidget(row_count,3,cbo)
+                    #self.setRowColor(table,row_count,1)
+                else:
+                    item3_data = tmp
+                    newItem3 = QTableWidgetItem(item3_data)
+                    table.setItem(row_count, 2, newItem3)
+                    cbo = QComboBox()
+                    cbo.addItem(self.tr('string'))
+                    table.setCellWidget(row_count,3,cbo)
+                row_count += 1
+        #print row_count
+        
+    # 返回某行的内容，包括key、value、data、type
+    def get_row_content(self, table, row):
+        content = {}
+        isNoneType = 0
+        cell = table.cellWidget(row,3)
+        if type(cell)==types.NoneType:
+            row_type=''
+        else:
+            row_type = unicode(cell.currentText())
+
+        content['type'] = row_type
+        for i in range(3):
+            tmp_item = table.item(row,i)
+            if type(tmp_item) is types.NoneType:
+                isNoneType = 1
+                break
+            else:
+                if i==0:
+                    key = unicode(tmp_item.text())
+                elif i==1:
+                    value = unicode(tmp_item.text())
+                elif i==2:
+                    data = unicode(tmp_item.text())
+                else:
+                    pass
+        if isNoneType==0:
+            content['key'] = key
+            content['value'] = value
+            content['data'] = data
+        else:
+            content['key'] = '1111'
+            content['value'] = '22*2'
+            content['data'] = '333*'
+        return content
+    
+    # 设置某行的颜色,红色代表源文件删除的，绿色代表目的文件增加的，黄色代表修改的
+    def set_row_color(self, table, row, color):
+        item0 = table.item(row,0)
+        item1 = table.item(row,1)
+        item2 = table.item(row,2)
+        if color==0:
+            pass
+        elif color==1:  # delete 1
+            item0.setBackgroundColor(QColor(255,102,102))
+            item1.setBackgroundColor(QColor(255,102,102))
+            item2.setBackgroundColor(QColor(255,102,102))
+        elif color==2: #add 2
+            item0.setBackgroundColor(QColor(204,255,153))
+            item1.setBackgroundColor(QColor(204,255,153))
+            item2.setBackgroundColor(QColor(204,255,153))
+        else: #change 3
+            item0.setBackgroundColor(QColor(255,255,0))
+            item1.setBackgroundColor(QColor(255,255,0))
+            item2.setBackgroundColor(QColor(255,255,0))
+            
+    # 清除可视化表格，只剩行头
+    def clear_table(self, table):
+        rows = table.rowCount()
+        while rows:
+            for i in range(rows):
+                table.removeRow(i)
+            rows = table.rowCount()
+            
+    # 生成比较的table
+    def update_table(self):
+        self.clear_table(self.table1)
+        self.clear_table(self.table2)
+        #left
+        global registry,file_path
+        #print 'source:' + file_path
+        self.fill_table(self.table1, registry)
+        source = u'源文件 ' + file_path
+        self.label1.setText(self.tr(source))
+    
+        #right
+        global compare_file_path
+        f = codecs.open(compare_file_path, 'r', 'utf16')
+        compare_registry = {}
+        for line in f:
+            if ('[' in line) and (']' in line):
+                l = line.index('[')
+                r = line.index(']')
+                key = line[(l+1):r]
+                compare_registry[key] = {}
+            elif ('"' in line):
+                value_data = line.split('=')
+                start = line.index('"')
+                value = value_data[0][start:].strip('\"')
+                data = value_data[1].strip().strip('\"')
+                compare_registry[key][value] = data
+            else:
+                print 'Something is wrong!'
+        f.close()
+        self.fill_table(self.table2, compare_registry)
+        destination = u'目的文件 ' + compare_file_path
+        self.label2.setText(self.tr(destination))
+        # 下面是生成表格对比视图的功能算法
+        i = 0
+        right = 0
+        left_end = self.table1.rowCount()
+        right_end = self.table2.rowCount()
+        source_row = {}
+        dest_row = {}
+        flag = False
+
+        while (i<left_end):
+            source_row = self.get_row_content(self.table1, i)
+            for j in range(right, right_end):
+                dest_row = self.get_row_content(self.table2, j)
+                if (source_row['key']==dest_row['key']) and (source_row['value']==dest_row['value']):
+                    flag = True
+                    if j>i:
+                        for ii in range(i,j):
+                            #print 'j>i: ' + str(ii) + ' ' + str(j) 
+                            self.table1.insertRow(ii)  # table1 插入空行
+                            left_end += 1
+                        a = j-i
+                        i = i+a
+                        #print 'i: ' + str(i)
+                            
+                    elif j<i:
+                        for jj in range(j,i):
+                            #print 'j<i: ' + str(jj) + ' ' + str(i)
+                            self.table2.insertRow(jj) # table2 插入空行
+                            right_end += 1
+                        b = i-j
+                        right = right+b
+                        #print 'right: ' + str(right)
+                    else:
+                        pass
+                    
+                    if (source_row['data']==dest_row['data']) and (source_row['type']==dest_row['type']):
+                        pass
+                    else:
+                        self.set_row_color(self.table2, i, 3) # change 黄色，被修改的表项
+                        self.set_row_color(self.table1, i, 3)
+                    break
+                else:
+                    pass
+                    #self.set_row_color(self.table2,j,2) # 绿色
+                    
+            if (j==(right_end-1)) and (flag==False):
+                self.set_row_color(self.table1, i, 1) # delete 红色，源文件被删除表项（相对目的文件）
+            i += 1
+            flag = False
+
+        for r in range(right_end):
+            item0 = self.table2.item(r,0)
+            item1 = self.table2.item(r,1)
+            if (type(item0) is types.NoneType) or (type(item1) is types.NoneType):
+                continue
+            else:
+                text0 = unicode(item0.text())
+                text1 = unicode(item1.text())
+
+                if text0 not in registry.keys():
+                    self.set_row_color(self.table2, r, 2) # 绿色，目的文件特有表项
+                else:
+                    if text1 not in registry[text0]:
+                        self.set_row_color(self.table2, r, 2) # 绿色，目的文件特有表项
+                    else:
+                        pass
+
+class MainViewer(QWidget):
+    def __init__(self, parent=None):
+        super(MainViewer,self).__init__(parent)
+        screen = QDesktopWidget().screenGeometry()
+        self.resize(screen.width(), screen.height())
+        self.setWindowTitle(self.tr("Regedit注册表管理系统"))
+
+        # 用来判断输入的数据类型是否正确
+        self.dword_list=['0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f','A','B','C','D','E','F']
+        self.hex_list=['0','1',',']
+
+        self.current_file = QLabel()
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(1)
+        self.tree.setHeaderLabels(['Regedit Tree'])
+        self.connect(self.tree,SIGNAL('itemClicked(QTreeWidgetItem*,int)'),self.show_table)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.connect(self.tree,SIGNAL('customContextMenuRequested(QPoint)'),self.show_right_table)
+        
+        self.open_button = QPushButton(self.tr('打开'))
+        self.connect(self.open_button,SIGNAL("clicked()"),self.open_file)
+
+        self.save_button = QPushButton(self.tr('保存'))
+        self.connect(self.save_button,SIGNAL("clicked()"),self.save_file)
+
+        self.save_as_button = QPushButton(self.tr('另存为'))
+        self.connect(self.save_as_button,SIGNAL("clicked()"),self.save_as_file)
+
+        self.compare_button = QPushButton(self.tr('比较其他注册表'))
+        self.connect(self.compare_button,SIGNAL("clicked()"),self.compare)
+
+        self.searchEdit = QLineEdit()
+        self.connect(self.searchEdit,SIGNAL("returnPressed()"),self.search)
+        self.searchRadio = QRadioButton(self.tr('正则搜索'))
+        self.searchButton = QPushButton(self.tr('搜索'))
+        self.connect(self.searchButton,SIGNAL("clicked()"),self.search)
+
+        self.regexHelp = QPushButton(self.tr('正则指南'))
+        self.connect(self.regexHelp,SIGNAL("clicked()"),self.regex_help)
+        self.operateHelp = QPushButton(self.tr('操作指南'))
+        self.connect(self.operateHelp,SIGNAL("clicked()"),self.operate_help)
+
+        
+        self.delete = QPushButton(self.tr("删除表项"))
+        self.connect(self.delete,SIGNAL("clicked()"),self.delete_row)
+        
+        self.add = QPushButton(self.tr("增加表项"))
+        self.connect(self.add,SIGNAL("clicked()"),self.add_row)
+
+        self.diff_table = DiffTable()
+         
+        leftLayout = QVBoxLayout()
+        leftLayout.addWidget(self.current_file)
+        leftLayout.addWidget(self.tree)
+
+        # table
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        #self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
+        #self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        #self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setHorizontalHeaderLabels(['Value','Data','Type','Checked'])
+        #self.table.horizontalHeader().setResizeMode(QHeaderView.Stretch)
+        self.table.setColumnWidth(0,300)
+        self.table.setColumnWidth(1,250)
+        self.table.setColumnWidth(2,80)
+        self.table.setColumnWidth(3,80)
+        
+        lab=QLabel()
+        lab.setText(self.tr('Value-Data注册表内容'))
+        lab.setAlignment(Qt.AlignTop)
+        
+        self.middleLayout = QVBoxLayout()
+        self.middleLayout.setAlignment(Qt.AlignTop)
+        self.middleLayout.setSpacing(12)
+        self.middleLayout.addWidget(lab)
+        self.middleLayout.addWidget(self.table)
+        
+        rightLayout1 = QGridLayout()
+        rightLayout1.addWidget(self.open_button, 0 ,0)
+        rightLayout1.addWidget(self.save_button, 1 ,0)
+        rightLayout1.addWidget(self.save_as_button, 2 ,0)
+        rightLayout1.addWidget(self.compare_button, 3 ,0)
+        rightLayout1.setSpacing(16)
+
+        rightLayout2 = QGridLayout()
+        rightLayout2.addWidget(self.searchEdit, 0 ,0)
+        rightLayout2.addWidget(self.searchRadio, 1 ,0)
+        rightLayout2.addWidget(self.searchButton, 2 ,0)
+        rightLayout2.setSpacing(12)
+
+        rightLayout3 = QGridLayout()
+        rightLayout3.addWidget(self.regexHelp,0,0)
+        rightLayout3.addWidget(self.operateHelp,1,0)
+        rightLayout3.setSpacing(12)
+
+        rightLayout4 = QGridLayout()
+        rightLayout4.addWidget(self.add,0,0)
+        rightLayout4.addWidget(self.delete,1,0)
+        rightLayout4.setSpacing(12)
+
+        rightLayout = QGridLayout()
+        rightLayout.addLayout(rightLayout1,0,0)
+        rightLayout.addLayout(rightLayout2,2,0)
+        rightLayout.addLayout(rightLayout4,1,0)
+        rightLayout.addLayout(rightLayout3,3,0)
+
+        MainLayout = QGridLayout(self)
+        MainLayout.addLayout(leftLayout, 0,0)
+        MainLayout.addLayout(self.middleLayout, 0,1)
+        MainLayout.addLayout(rightLayout, 0,2)
+        MainLayout.setColumnStretch(0,2)
+        MainLayout.setColumnStretch(1,5)
+        MainLayout.setColumnStretch(2,1)
+    # 在列表中添加新的value-data项
+    def add_row(self):
+        select_row = self.table.currentRow()
+        #print 'select_row: ' + str(select_row)
+        if select_row==-1:
+            new_row = 1
+        else:
+            new_row = select_row + 1
+        
+        large = []
+        small = []
+        for i in self.key_rows:
+            if new_row<=i:
+                large.append(i+1)
+            else:
+                small.append(i)
+        self.key_rows = []
+        for i in small:
+            self.key_rows.append(i)
+        for i in large:
+            self.key_rows.append(i)
+        
+        self.table.insertRow(new_row)
+        cbo = QComboBox()
+        cbo.addItem(self.tr('string'))
+        cbo.addItem(self.tr('dword'))
+        cbo.addItem(self.tr('hex'))
+        self.table.setCellWidget(new_row, 2, cbo)
+
+        check = QCheckBox('Delete')
+        self.table.setCellWidget(new_row, 3, check)
+        
+        self.table.setCurrentCell(new_row, 0)
+    # 删除列表中选中的value-data项
+    def delete_row(self):
+        current_rows = self.table.rowCount()
+        delete_list = []
+        for i in range(current_rows):
+            if i not in self.key_rows:
+                cell = self.table.cellWidget(i,3)
+                if cell.checkState()==Qt.Checked:
+                    delete_list.append(i)
+                else:
+                    pass
+        reverse = sorted(delete_list, reverse=True)
+        for j in reverse:
+            self.table.removeRow(j)
+            self.update_key_rows(j)
+            #print j
+    # self.key_rows保存当前列表中是KEY行的所有行数
+    def update_key_rows(self, row):
+        large = []
+        small = []
+        for i in self.key_rows:
+            if row<=i:
+                large.append(i-1)
+            else:
+                small.append(i)
+        self.key_rows = []
+        for i in small:
+            self.key_rows.append(i)
+        for i in large:
+            self.key_rows.append(i)
+    # 搜索
+    def search(self):
+        global registry
+        content = unicode(self.searchEdit.text())
+        content = content.strip()
+
+        find = {}
+        if content=='':
+            return
+        else:
+            if self.searchRadio.isChecked():
+                # 正则搜索
+                pattern = re.compile(content, re.I)
+                print 'regex: ' + content
+                for ele in registry:
+                    for ele2 in registry[ele]:
+                        match1 = pattern.search(ele)
+                        match2 = pattern.search(ele2)
+                        match3 = pattern.search(registry[ele][ele2])
+                        if match1 or match2 or match3:
+                            if ele in find.keys():
+                                find[ele][ele2]=registry[ele][ele2]
+                                #print ele
+                            else:
+                                find[ele]={}
+                                find[ele][ele2]=registry[ele][ele2]
+                                #print ele
+            else:
+                # 关键词搜索
+                search_words = content.lower()
+
+                for ele in registry:
+                    for ele2 in registry[ele]:
+                        key_value_data = unicode(ele + '  ' + ele2 + '  ' + registry[ele][ele2]).lower()
+                        if key_value_data.find(search_words)==-1:
+                            pass
+                        else:
+                            if ele in find.keys():
+                                find[ele][ele2]=registry[ele][ele2]
+                                #print ele
+                            else:
+                                find[ele]={}
+                                find[ele][ele2]=registry[ele][ele2]
+                                #print ele
+                            #print ele
+         
+        
+        self.fill_table(self.table,find)      
+        #return find
+
+# 操作指南和正则搜索指南
+    def operate_help(self):
+        message = '''（1）【打开文件】代表新的要打开的Register文件；
+（2）【另存为】代表把当前视图中的Register表格存储为新的文件；
+（3）【保存】代表把当前视图中的Register表格保存到源文件；
+（4）【增加表项】代表在当前选中行的下方添加新的一行，然后双击新添加行的表格进行内容填充；
+（5）【删除表项】代表删除当前选中行，支持批量删除；
+（6）【搜索】默认对表格内容进行‘关键字搜索’，选择‘正则搜索’可以进行正则匹配搜索；
+（7）【指南】操作指南。
+   ex: 'de*b'表示重复e字母0个或0个以上，如deb,deeb,deeeb等；'''
+        QMessageBox.about(self, self.tr('操作指南'), self.tr(message))
+
+    def regex_help(self):
+        message = '''（1）'.'代表某个字符；
+（2）'*'代表重复前一个字符0次或0次以上；
+（3）'?'代表重复前一个字符0次或1次；
+（4）'+'代表重复前一个字符1次或1次以上;
+......
+   ex: 'de*b'表示重复e字母0个或0个以上，如deb,deeb,deeeb等；'''
+        QMessageBox.about(self, self.tr('正则指南'), self.tr(message))
+    #生成比较界面
+    def compare(self):
+        fileName = QFileDialog.getOpenFileName(self,self.tr("打开要比较的Registry文件"),'.',self.tr("Open Files(*)"))
+        #print 'compare_file_path: ' + unicode(self.fileName)
+        global compare_file_path
+        if unicode(fileName):
+            compare_file_path = unicode(fileName)
+        else:
+            return
+        
+        self.diff_table.update_table()
+        self.diff_table.show()
+    # 另存为
+    def save_as_file(self):
+        global registry
+        registry1 = self.check_table(self.table)
+        if registry1==False:
+            return
+        else:
+            for key in registry1:
+                registry[key]=registry1[key]
+
+        saveName = QFileDialog.getSaveFileName(self,self.tr("Save File"),'.',self.tr("Save Files(*)"))
+        path = unicode(saveName)
+        tmp2 = sorted(registry.iteritems(), key=lambda d:d[0])
+        #print path
+        if path:
+            s_file = codecs.open(path, 'w')
+        else:
+            return
+        s_file.truncate()
+        s_file.write(codecs.BOM_UTF16_LE)
+    
+        for ele1 in tmp2:
+            key = unicode('[' + ele1[0] + ']\r')
+            s_file.write(key.encode('utf16'))
+            sorted_vd = sorted(ele1[1].iteritems(), key=lambda d:d[0])
+            for ele2 in sorted_vd:
+                tmp3 = ele2[1]
+                if tmp3.startswith('dword:') or tmp3.startswith('Dword:') or tmp3.startswith('DWORD:'):
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + tmp3 + '\r')
+                elif tmp3.startswith('hex:') or tmp3.startswith('Hex:') or tmp3.startswith('HEX:'):
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + tmp3 + '\r') 
+                else:
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + '"' + tmp3 + '"\r')
+                s_file.write(value_data.encode('utf16'))
+
+        s_file.close()
+    # 保存到打开的文件（源文件）
+    def save_file(self):
+        global registry,file_path
+       
+        registry1 = self.check_table(self.table)
+        if registry1==False:
+            return
+        else:
+            for key in registry1:
+                registry[key]=registry1[key]
+        
+        path = file_path
+        tmp2 = sorted(registry.iteritems(), key=lambda d:d[0])
+        #print path
+        if path:
+            s_file = codecs.open(path, 'w')
+        else:
+            return
+        s_file.truncate()
+        s_file.write(codecs.BOM_UTF16_LE)
+    
+        for ele1 in tmp2:
+            key = unicode('[' + ele1[0] + ']\r')
+            s_file.write(key.encode('utf16'))
+            sorted_vd = sorted(ele1[1].iteritems(), key=lambda d:d[0])
+            for ele2 in sorted_vd:
+                tmp3 = ele2[1]
+                if tmp3.startswith('dword:') or tmp3.startswith('Dword:') or tmp3.startswith('DWORD:'):
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + tmp3 + '\r')
+                elif tmp3.startswith('hex:') or tmp3.startswith('Hex:') or tmp3.startswith('HEX:'):
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + tmp3 + '\r') 
+                else:
+                    value_data = unicode('"' + ele2[0] + '"' + '=' + '"' + tmp3 + '"\r')
+                s_file.write(value_data.encode('utf16'))
+
+        s_file.close()
+    # 验证当前列表中表项的合法性
+    def check_table(self,table):
+        registry1 = {}
+        #registry1[table.key]={}
+        
+        for i in range(table.rowCount()):
+            if i in self.key_rows:
+                item = table.item(i,0)
+                key = unicode(item.text())
+                registry1[key]={}
+            else:
+                for j in range(2):
+                    tmp_item = table.item(i,j)
+                    #print 'i: '+ str(i) +'  ' + 'j: ' +str(j)
+                    if type(tmp_item) is types.NoneType:  #如果某行为空，跳过不保存
+                        QMessageBox.warning(self, self.tr('警告'),self.tr(key+u'发现第' + str(i+1) +u'行有空表格1，请继续填写或删除！'))
+                        table.setCurrentCell(i, j)
+                        #self.set_row_color(table,i,1)
+                        #blank = True
+                        return False
+                    else:
+                        if j==0: #value
+                            if unicode(tmp_item.text()):
+                                value = unicode(tmp_item.text())
+                            else:
+                                QMessageBox.warning(self, self.tr('警告'),self.tr(key+u'发现第' + str(i+1) +u'行有空表格2，请继续填写或删除！'))
+                                table.setCurrentCell(i, j)
+                                #self.set_row_color(table,i,1)
+                                #blank = True
+                                return False
+                        
+                            if value in registry1[key].keys():
+                                QMessageBox.warning(self, self.tr('警告'),self.tr(key+u'发现第' + str(i+1) +u'行VALUE值：' + value +u'有重复的VALUE值：' + value + u'，请修改或删除！'))
+                                table.setCurrentCell(i,j)
+                                #self.set_row_color(table,i,1)
+                                #blank = True
+                                return False
+                        
+                        elif j==1: #data
+                            if unicode(tmp_item.text()):
+                                data = unicode(tmp_item.text())
+                            else:
+                                QMessageBox.warning(self, self.tr('警告'),self.tr(u'发现第' + str(i+1) +u'行有空表格3，请继续填写或删除！'))
+                                #table.setCurrentCell(i, j)
+                                #self.set_row_color(table,i,1)
+                                #blank = True
+                                #break
+                                return False       
+                        else:
+                            print 'Something is wrong!'
+
+                cell = table.cellWidget(i,2)
+                if type(cell)==types.NoneType:
+                    return False
+                else:
+                    row_type = unicode(cell.currentText())
+                # ok
+                if row_type=='string':
+                    registry1[key][value] = data
+                elif row_type=='hex':
+                    data1 = data.strip().split(' ')
+                    data2 = data1[0].replace(',','')
+                    i_count = 0
+                    for ii in data2:
+                        if ii in self.hex_list:
+                            i_count += 1
+                            if i_count>8:
+                                QMessageBox.warning(self, self.tr('警告'),self.tr(u'发现第' + str(i+1) +u'行输入的hex长度(8位)有误，请重新输入！'))
+                                self.table.setCurrentCell(i,1)
+                                #self.set_row_color(table,i,1)
+                                return False
+                        else:
+                            QMessageBox.warning(self, self.tr('警告'),self.tr(u'发现第' + str(i+1) +u'行输入的hex格式有误，请重新输入！'))
+                            table.setCurrentCell(i,1)
+                            #self.set_row_color(table,i,1)
+                            return False
+                    registry1[key][value] = u'hex:' + data2
+                elif row_type=='dword':
+                    data1 = data.strip().split(' ')
+                    i_count = 0
+                    for ii in data1[0]:
+                        if ii in self.dword_list:
+                            i_count += 1
+                            if i_count>8:
+                                QMessageBox.warning(self, self.tr('警告'),self.tr(u'发现第' + str(i+1) +u'行输入的dword长度(4个字节)有误，请重新输入！'))
+                                self.table.setCurrentCell(i,1)
+                                #self.set_row_color(table,i,1)
+                                return False
+                        else:
+                            QMessageBox.warning(self, self.tr('警告'),self.tr(u'发现第' + str(i+1) +u'行输入的dword格式有误，请重新输入！'))
+                            table.setCurrentCell(i,1)
+                            #self.set_row_color(table,i,1)
+                            return False
+                    registry1[key][value] = u'dword:' + data1[0]
+                else:
+                    pass
+        #registry1[table.key][value] = data
+        #print registry1
+        return registry1
+    # 目录树右键菜单
+    def show_right_table(self,pos):
+        self.item = self.tree.itemAt(pos)
+        #print item.text(0)
+        #print pos.x()
+        #print pos.y()
+        if type(self.item) is types.NoneType:
+            return
+        else:
+            self.menu = QMenu(self.tree)
+            self.addAction = QAction(self.tr('添加子节点'),self.tree)
+            self.delAction = QAction(self.tr('删除当前节点'),self.tree)
+            self.modAction = QAction(self.tr('修改当前节点'),self.tree)
+            self.genAction = QAction(self.tr('生成当前KEY'),self.tree)
+            self.menu.addAction(self.addAction)
+            self.menu.addAction(self.delAction)
+            self.menu.addAction(self.modAction)
+            self.menu.addAction(self.genAction)
+            self.connect(self.addAction, SIGNAL('triggered()'),self.add_child)
+            self.connect(self.delAction, SIGNAL('triggered()'),self.del_key)
+            self.connect(self.modAction, SIGNAL('triggered()'),self.mod_key)
+            self.connect(self.genAction, SIGNAL('triggered()'),self.gen_key)
+            #self.menu.mapFromGlobal(pos)
+            self.menu.exec_(QCursor.pos())
+            #self.menu.show()
+    # 生成当前KEY
+    def gen_key(self):
+        current_key = self.KeySelected(self.item, 0)
+        global registry
+
+        if current_key[0]=='\\':
+            current_key = current_key[1:]
+
+        if current_key not in registry.keys():
+            registry[current_key] = {}
+        else:
+            pass
+
+    # 添加子节点
+    def add_child(self):
+        current_key = self.KeySelected(self.item, 0)
+        global registry
+        
+        new,ok=QInputDialog.getText(self,self.tr("Modify"),self.tr("请输入新的子Key值:"),QLineEdit.Normal,QString())
+        if ok and (not new.isEmpty()):
+            
+            child_count = self.item.childCount()
+            for i in range(child_count):
+                tmp = self.item.child(i)
+                child_name = unicode(tmp.text(0))
+                if child_name==unicode(new):
+                    QMessageBox.warning(self, self.tr('警告'),self.tr('发现当前添加的子节点已经存在，请重新命名子节点！'))
+                    return
+                
+            child = QTreeWidgetItem(self.item)
+            child.setText(0,unicode(new))
+            new_key = unicode(current_key + '\\' + new)
+            #print "new_key:",new_key
+            
+            if new_key[0]=='\\':
+                new_key=new_key[1:]
+            
+            registry[new_key] = {}
+    # 删除当前节点
+    def del_key(self):
+        current_key = self.KeySelected(self.item, 0)
+        global registry
+
+        children = self.item.takeChildren()
+        parent = self.item.parent()
+        parent.removeChild(self.item)
+        del_list = []
+        
+        # 更新registry,前缀为current_key的字典赋空
+        for ele in registry:
+            if ele.startswith(current_key):
+                del_list.append(ele)
+                #registry[ele] = {}
+                #del registry[ele] # 删除对应的字典键值
+                
+        for i in del_list:
+            del registry[i]
+        self.clear_table(self.table)
+        #self.menu.hide()
+            #print i
+    # 修改当前节点
+    def mod_key(self):
+        current_key = self.KeySelected(self.item, 0)
+        parent_key = self.KeySelected(self.item.parent(),0)
+        global registry
+
+        mod_list = []
+        mod_registry = {}
+        new,ok=QInputDialog.getText(self,self.tr("Modify"),self.tr("请输入新的Key值:"),QLineEdit.Normal,self.item.text(0))
+        if ok and (not new.isEmpty()):
+            #self.menu.hide()
+            self.clear_table(self.table)
+            self.item.setText(0,new)
+            new_key = unicode(parent_key + '\\' + new)
+            if new_key[0]=='\\':
+                new_key=new_key[1:]
+            for ele in registry:
+                if ele.startswith(current_key):
+                    
+                    ele1 = ele.replace(current_key,new_key)
+                    #print ele
+                    #print ele1
+                    mod_registry[ele1] = copy.deepcopy(registry[ele])
+                    mod_list.append(ele)
+                    #print ele
+                    #registry[new_key] = copy.deepcopy(registry[])
+                    #del registry[ele]
+                    
+            #registry = dict(registry,**mod_registry)
+            registry11 = dict(mod_registry,**registry)
+            registry = registry11
+            for i in mod_list:
+                del registry[i]
+
+            reg1 = {}
+            reg1[new_key] = registry[new_key]
+            self.fill_table(self.table, reg1)
+            
+    # 返回选择的完整KEY
+    def KeySelected(self, item, column):  
+        p=item
+        index=0
+        key=p.text(0)
+        while p.parent():
+            p=p.parent()
+            key=p.text(0)+"\\"+key
+        return unicode(key[1:])
+    # 情况列表
+    def clear_table(self,table):
+        rows = table.rowCount()
+        while rows:
+            for i in range(rows):
+                table.removeRow(i)
+            rows = table.rowCount()
+
+
+    def set_key_color(self, row):
+        item = self.table.item(row,0)
+        item.setBackgroundColor(QColor(255,239,213))
+    # 显示列表
+    def show_table(self,item,col):
+        #self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
+        #self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        registry1 = self.check_table(self.table)
+        if registry1==False:
+            return
+        else:
+            global registry
+            for key in registry1:
+                registry[key]=registry1[key]
+            
+            key = self.KeySelected(item,0)
+            show_key = {}
+            if key in registry:
+                show_key[key] = registry[key]
+                self.fill_table(self.table,show_key)
+            else:
+                self.clear_table(self.table)
+    # 列表填充
+    def fill_table(self, table, reg):
+        global registry
+        self.key_rows = []
+        self.clear_table(table)
+        row_count = 0
+        sorted_reg = sorted(reg.iteritems(), key=lambda d:d[0])
+        
+        for key in sorted_reg:
+            key_row = copy.deepcopy(row_count)
+            self.key_rows.append(key_row)
+            
+            table.insertRow(row_count)
+            key_item = QTableWidgetItem(key[0])
+            table.setItem(row_count, 0, key_item)
+            row_count += 1
+            sorted_vd = sorted(registry[key[0]].iteritems(), key=lambda d:d[0])
+            for vd in sorted_vd:
+                table.insertRow(row_count)
+                value_item = QTableWidgetItem(vd[0])
+                table.setItem(row_count, 0, value_item)
+                tmp = vd[1]
+                if tmp.startswith('dword:') or tmp.startswith('Dword:') or tmp.startswith('DWORD:'):
+                    dw = tmp[6:]
+                    oct_dw = int(dw, 16)
+                    data = unicode(dw + ' (oct: ' + str(oct_dw) + ')')
+                    data_item = QTableWidgetItem(data)
+                    table.setItem(row_count, 1, data_item)
+                    cbo = QComboBox()
+                    cbo.addItem(self.tr('dword'))
+                    cbo.addItem(self.tr('hex'))
+                    cbo.addItem(self.tr('dword'))
+                    table.setCellWidget(row_count,2,cbo)
+                    #self.setRowColor(row_count,2)
+            
+                elif tmp.startswith('hex:') or tmp.startswith('Hex:') or tmp.startswith('HEX:'):
+                    hx = tmp[4:].replace(',','')
+                    oct_hx = int(hx, 2)
+                    data = unicode(hx + ' (oct: ' + str(oct_hx) + ')')
+                    data_item = QTableWidgetItem(data)
+                    table.setItem(row_count, 1, data_item)
+                    cbo = QComboBox()
+                    cbo.addItem(self.tr('hex'))
+                    cbo.addItem(self.tr('hex'))
+                    cbo.addItem(self.tr('dword'))
+                    table.setCellWidget(row_count,2,cbo)
+                    #self.setRowColor(row_count,1)
+                    
+                else:
+                    data = tmp
+                    data_item = QTableWidgetItem(data)
+                    table.setItem(row_count, 1, data_item)
+                    
+                    cbo = QComboBox()
+                    cbo.addItem(self.tr('string'))
+                    cbo.addItem(self.tr('hex'))
+                    cbo.addItem(self.tr('dword'))
+                    table.setCellWidget(row_count,2,cbo)
+                    
+                check = QCheckBox('Delete')
+                table.setCellWidget(row_count,3, check)
+                
+                if vd[0] in reg[key[0]].keys():
+                    self.set_row_color(self.table, row_count, 2)
+
+                row_count += 1
+            self.table.setSpan(key_row,0,1,4)
+            self.set_key_color(key_row)
+                
+    # 导入注册表
+    def open_file(self):
+        self.clear_table(self.table)
+        fileName = QFileDialog.getOpenFileName(self,self.tr("Open File"),'.',self.tr("Open Files(*)"))
+        #print unicode(self.fileName)
+        if fileName:
+            f = codecs.open(unicode(fileName), 'r', 'utf16')
+        else:
+            return
+        
+        global file_path
+        file_path = unicode(fileName)
+        self.current_file.setText(u'当前文件： '+file_path)
+        
+        global registry
+        registry = {}
+        for line in f:
+            if ('[' in line) and (']' in line):
+                l = line.index('[')
+                r = line.index(']')
+                key = line[(l+1):r]
+                registry[key] = {}
+            elif ('"' in line):
+                value_data = line.split('=')
+                start = line.index('"')
+                value = value_data[0][start:].strip('\"')
+                data = value_data[1].strip().strip('\"')
+                registry[key][value] = data
+            else:
+                print 'Something is wrong!'
+        f.close()
+        #registry = sorted(registry.iteritems(), key=lambda d:d[0])
+        self.build_tree()
+        #self.fill_table()
+        
+    # 生成注册树
+    def build_tree(self):
+        global registry
+        sorted_registry = sorted(registry.iteritems(), key=lambda d:d[0])
+
+        self.tree.clear()
+        netree = {}
+        p=netree
+        for key in sorted_registry:
+            p=netree
+            ss=key[0].split('\\')
+            for item in ss:
+                if item not in p:
+                    p[item]={}
+                p=p[item]
+        root = QTreeWidgetItem(self.tree)
+        self.levelTree(netree,root)
+
+    def levelTree(self,nodes,treeRoot):
+        if type(nodes)==type({}):
+            for key in nodes:
+                child=QTreeWidgetItem(treeRoot)
+                child.setText(0,key)
+                self.levelTree(nodes[key],child)
+            self.tree.expandAll()
+        
+        # 保存文件
+
+
+        # 设置某行的颜色,红色代表源文件删除的，绿色代表目的文件增加的，黄色代表修改的
+    def set_row_color(self, table, row, color):
+        
+        #print "row",row
+
+        #print "table",table.rowCount()
+        
+        item0 = table.item(row,0)
+        #print "item",table.item(row,0)
+        item1 = table.item(row,1)
+        #print "item",table.item(row,1)
+        #item2 = table.item(row,3)
+        #print "item",table.item(row,3)
+        
+        if color==0:
+            pass
+        elif color==1:  # delete 1
+            item0.setBackgroundColor(QColor(255,102,102))
+            item1.setBackgroundColor(QColor(255,102,102))
+            #item2.setBackgroundColor(QColor(255,102,102))
+        elif color==2: #add 2
+            item0.setBackgroundColor(QColor(204,255,153))
+            item1.setBackgroundColor(QColor(204,255,153))
+            #item2.setBackgroundColor(QColor(204,255,153))
+        else: #change 3
+            item0.setBackgroundColor(QColor(255,255,0))
+            item1.setBackgroundColor(QColor(255,255,0))
+            #item2.setBackgroundColor(QColor(255,255,0))
+        
+       
+app = QApplication(sys.argv)
+View = MainViewer()
+View.show()
+app.exec_()
